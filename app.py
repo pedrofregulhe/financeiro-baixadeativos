@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from simple_salesforce import Salesforce
 import io
 
@@ -13,10 +13,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# CSS Customizado para Visual Premium e Remoção de Espaços
 st.markdown("""
     <style>
-    /* 1. Remove o espaço excessivo no topo e esconde o header do Streamlit */
     [data-testid="stAppViewBlockContainer"] {
         padding-top: 1.5rem;
         padding-bottom: 1rem;
@@ -25,16 +23,14 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 
-    /* 2. Estilização do Fundo e Tipografia */
     .main { background-color: #F0F2F6; }
     
-    /* 3. Estilização dos Cards de KPI */
     .metric-card {
         background-color: #ffffff;
         border-radius: 12px;
         padding: 20px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        border-left: 5px solid #1E3A8A; /* Azul Corporativo */
+        border-left: 5px solid #1E3A8A;
         margin-bottom: 10px;
     }
     .metric-label {
@@ -50,7 +46,6 @@ st.markdown("""
         font-weight: 700;
     }
     
-    /* 4. Estilo do Título Principal */
     .main-title {
         color: #1E3A8A;
         font-size: 24px;
@@ -60,7 +55,6 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Função auxiliar para criar os cards visuais
 def kpi_card(label, value):
     st.markdown(f"""
         <div class="metric-card">
@@ -69,13 +63,16 @@ def kpi_card(label, value):
         </div>
     """, unsafe_allow_html=True)
 
-# Título da Página
+def formatar_moeda_br(valor):
+    """Formata valores para o padrão R$ 1.234,56"""
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
 st.markdown('<p class="main-title">Monitoramento: Baixas Manuais de Ativos</p>', unsafe_allow_html=True)
 
 # ==========================================
-# 1. MOTOR DE DADOS (SALESFORCE)
+# 1. MOTOR DE DADOS (SEM CACHE PARA DADOS REAIS)
 # ==========================================
-@st.cache_data(ttl=3600)
+# Removido @st.cache_data para garantir conexão a cada acesso
 def carregar_dados_full():
     usuario = st.secrets["sf_user"]
     senha = st.secrets["sf_pass"]
@@ -99,16 +96,16 @@ def carregar_dados_full():
     res = sf.query_all(query)
     df = pd.json_normalize(res['records'])
     
-    if df.empty: return pd.DataFrame(), datetime.now()
+    if df.empty: 
+        # Ajuste de fuso horário (-3h para Brasília)
+        return pd.DataFrame(), datetime.now() - timedelta(hours=3)
 
     df.drop(columns=[c for c in df.columns if 'attributes' in c], inplace=True, errors='ignore')
     
-    # Formatação do Código do Item (Item do Contrato)
     df['FOZ_CodigoItem__c'] = df['FOZ_CodigoItem__c'].apply(
         lambda x: str(x).split('.')[0].zfill(8) if pd.notna(x) else ""
     )
     
-    # Datas e Financeiro
     df['FOZ_Data_Ativacao_Inativacao_Manual__c'] = pd.to_datetime(df['FOZ_Data_Ativacao_Inativacao_Manual__c']).dt.tz_localize(None)
     df['FOZ_ValorTotal__c'] = pd.to_numeric(df['FOZ_ValorTotal__c'], errors='coerce').fillna(0.0)
     
@@ -124,10 +121,11 @@ def carregar_dados_full():
         'FOZ_ValorTotal__c': 'Valor (R$)'
     })
     
-    return df, datetime.now()
+    # Ajuste de fuso horário na hora da sincronização
+    return df, datetime.now() - timedelta(hours=3)
 
 # ==========================================
-# 2. CONTROLES E FILTROS (SIDEBAR)
+# 2. CONTROLES E FILTROS
 # ==========================================
 st.sidebar.markdown("### 🏛️ Governança Financeira")
 df_base, data_ref = carregar_dados_full()
@@ -145,17 +143,15 @@ if not df_base.empty:
     df_filtrado = df_base[(df_base['Ano'] == ano_sel) & (df_base['Mes_Num'] == mes_sel)]
 
     st.sidebar.divider()
-    if st.sidebar.button("🔄 Atualizar Base Salesforce"):
-        st.cache_data.clear()
+    if st.sidebar.button("🔄 Forçar Atualização"):
         st.rerun()
 
-    st.sidebar.caption(f"Sync: {data_ref.strftime('%d/%m/%Y %H:%M')}")
+    st.sidebar.caption(f"Última Sincronização: \n{data_ref.strftime('%d/%m/%Y %H:%M:%S')}")
 
 # ==========================================
 # 3. DASHBOARD E KPIs
 # ==========================================
 if not df_base.empty:
-    # Renderização de Indicadores com HTML Customizado
     c1, c2, c3 = st.columns(3)
     
     total_vol = len(df_filtrado)
@@ -165,23 +161,28 @@ if not df_base.empty:
     with c1:
         kpi_card("Volume de Baixas", f"{total_vol} unidades")
     with c2:
-        kpi_card("Total Financeiro", f"R$ {total_fin:,.20f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        kpi_card("Total Financeiro", formatar_moeda_br(total_fin))
     with c3:
-        kpi_card("Ticket Médio", f"R$ {media:,.20f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        kpi_card("Ticket Médio", formatar_moeda_br(media))
     
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Tabela Principal
+    # Tabela
     cols_exibicao = ['Cliente', 'Item do Contrato', 'Nº de Série', 'Status', 'Data Baixa', 'Motivo', 'Valor (R$)']
     df_show = df_filtrado[cols_exibicao].copy()
-    df_show['Data Baixa'] = df_show['Data Baixa'].dt.strftime('%d/%m/%Y')
+    
+    # Formatação para exibição na tabela
+    df_tabela = df_show.copy()
+    df_tabela['Data Baixa'] = df_tabela['Data Baixa'].dt.strftime('%d/%m/%Y')
+    df_tabela['Valor (R$)'] = df_tabela['Valor (R$)'].apply(formatar_moeda_br)
 
-    st.dataframe(df_show, use_container_width=True, hide_index=True)
+    st.dataframe(df_tabela, use_container_width=True, hide_index=True)
 
-    # Exportação Excel
+    # Exportação
     if not df_filtrado.empty:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            # Exporta os dados com valores numéricos para o Excel permitir cálculos
             df_show.to_excel(writer, index=False, sheet_name='Extrato')
         
         st.download_button(
@@ -191,4 +192,4 @@ if not df_base.empty:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 else:
-    st.info("Conectando ao banco de dados...")
+    st.info("Buscando dados no Salesforce...")
