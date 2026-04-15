@@ -1,3 +1,4 @@
 streamlit
 pandas
 simple_salesforce
+openpyxl
