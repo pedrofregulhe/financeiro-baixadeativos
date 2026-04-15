@@ -13,8 +13,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# CSS Customizado para Visual Premium e Remoção de Espaços
 st.markdown("""
     <style>
+    /* Remove o espaço excessivo no topo e esconde o header do Streamlit */
     [data-testid="stAppViewBlockContainer"] {
         padding-top: 1.5rem;
         padding-bottom: 1rem;
@@ -25,6 +27,7 @@ st.markdown("""
 
     .main { background-color: #F0F2F6; }
     
+    /* Estilização dos Cards de KPI */
     .metric-card {
         background-color: #ffffff;
         border-radius: 12px;
@@ -70,9 +73,8 @@ def formatar_moeda_br(valor):
 st.markdown('<p class="main-title">Monitoramento: Baixas Manuais de Ativos</p>', unsafe_allow_html=True)
 
 # ==========================================
-# 1. MOTOR DE DADOS (SEM CACHE PARA DADOS REAIS)
+# 1. MOTOR DE DADOS (LIGAÇÃO DIRETA AO SALESFORCE)
 # ==========================================
-# Removido @st.cache_data para garantir conexão a cada acesso
 def carregar_dados_full():
     usuario = st.secrets["sf_user"]
     senha = st.secrets["sf_pass"]
@@ -97,11 +99,11 @@ def carregar_dados_full():
     df = pd.json_normalize(res['records'])
     
     if df.empty: 
-        # Ajuste de fuso horário (-3h para Brasília)
         return pd.DataFrame(), datetime.now() - timedelta(hours=3)
 
     df.drop(columns=[c for c in df.columns if 'attributes' in c], inplace=True, errors='ignore')
     
+    # Formatação do Código do Item (Item do Contrato)
     df['FOZ_CodigoItem__c'] = df['FOZ_CodigoItem__c'].apply(
         lambda x: str(x).split('.')[0].zfill(8) if pd.notna(x) else ""
     )
@@ -121,11 +123,11 @@ def carregar_dados_full():
         'FOZ_ValorTotal__c': 'Valor (R$)'
     })
     
-    # Ajuste de fuso horário na hora da sincronização
+    # Horário ajustado para Brasília (UTC-3)
     return df, datetime.now() - timedelta(hours=3)
 
 # ==========================================
-# 2. CONTROLES E FILTROS
+# 2. CONTROLES E FILTROS (SIDEBAR)
 # ==========================================
 st.sidebar.markdown("### 🏛️ Governança Financeira")
 df_base, data_ref = carregar_dados_full()
@@ -146,7 +148,7 @@ if not df_base.empty:
     if st.sidebar.button("🔄 Forçar Atualização"):
         st.rerun()
 
-    st.sidebar.caption(f"Última Sincronização: \n{data_ref.strftime('%d/%m/%Y %H:%M:%S')}")
+    st.sidebar.caption(f"Sincronização: \n{data_ref.strftime('%d/%m/%Y %H:%M:%S')}")
 
 # ==========================================
 # 3. DASHBOARD E KPIs
@@ -159,7 +161,8 @@ if not df_base.empty:
     media = total_fin / total_vol if total_vol > 0 else 0
 
     with c1:
-        kpi_card("Volume de Baixas", f"{total_vol} unidades")
+        # Texto alterado para "contratos"
+        kpi_card("Volume de Baixas", f"{total_vol} contratos")
     with c2:
         kpi_card("Total Financeiro", formatar_moeda_br(total_fin))
     with c3:
@@ -167,22 +170,20 @@ if not df_base.empty:
     
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Tabela
+    # Tabela Principal
     cols_exibicao = ['Cliente', 'Item do Contrato', 'Nº de Série', 'Status', 'Data Baixa', 'Motivo', 'Valor (R$)']
     df_show = df_filtrado[cols_exibicao].copy()
     
-    # Formatação para exibição na tabela
     df_tabela = df_show.copy()
     df_tabela['Data Baixa'] = df_tabela['Data Baixa'].dt.strftime('%d/%m/%Y')
     df_tabela['Valor (R$)'] = df_tabela['Valor (R$)'].apply(formatar_moeda_br)
 
     st.dataframe(df_tabela, use_container_width=True, hide_index=True)
 
-    # Exportação
+    # Exportação Excel
     if not df_filtrado.empty:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            # Exporta os dados com valores numéricos para o Excel permitir cálculos
             df_show.to_excel(writer, index=False, sheet_name='Extrato')
         
         st.download_button(
@@ -192,4 +193,4 @@ if not df_base.empty:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 else:
-    st.info("Buscando dados no Salesforce...")
+    st.info("A aguardar dados do Salesforce...")
